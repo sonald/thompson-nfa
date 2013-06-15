@@ -1,6 +1,6 @@
 CC=clang
 CFLAGS1=-g -DSTANDALONE
-CFLAGS2=-g -DDEBUG
+CFLAGS2=-DDEBUG $(CFLAGS1)
 SRCS=thompson_nfa.c
 
 all: libnfa.dylib igrep
@@ -10,6 +10,9 @@ igrep: $(SRCS)
 
 libnfa.dylib: $(SRCS)
 	$(CC) -g -shared $^ -o $@
+
+debug:  $(SRCS)
+	$(CC) $(CFLAGS2) $^ -o $@
 
 test: igrep
 	./igrep 'a?a?a' aaaaaa

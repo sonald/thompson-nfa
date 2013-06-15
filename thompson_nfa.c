@@ -42,8 +42,6 @@ static inline void debug(const char *fmt, ...)
 #endif
 }
 
-
-
 enum {
     Split = 256,
     Match = 257
@@ -415,6 +413,8 @@ static void step(RE *re, StateList *sl, int c, StateList *next)
             addstate(re, next, s->out);
         }
     }
+
+    assert(next->size <= re->priv->capacity);
 }
 
 static void annotate_nfa(State *s, int id)
@@ -428,7 +428,7 @@ static void annotate_nfa(State *s, int id)
     dump_state("annotate", s);
 }
 
-void dump_nfa(State *start)
+static void dump_nfa(State *start)
 {
     matchstate.lastlist = 1000;
     annotate_nfa(start, 1);
@@ -436,23 +436,27 @@ void dump_nfa(State *start)
 
 static void clean_tempdata(RE *re)
 {
-    LinkList **pll = &(re->priv->pfrags);
+    LinkList *pp;
+    LinkList **pll = &(re->priv->pspl);
+    while (*pll) {
+        debug("free spl %lx\n", (unsigned long)(*pll));
+        pp = *pll;
+        pll = &((*pll)->next);
+        free(pp->payload);
+        free(pp);
+    }
+    re->priv->pspl = NULL;
+
+    pll = &(re->priv->pfrags);
     while (*pll) {
         debug("free %lx\n", (unsigned long)(*pll));
-        free((*pll)->payload);
-        /* free(*pll); */
+        pp = *pll;
         pll = &((*pll)->next);
+        free(pp->payload);
+        free(pp);
     }
     re->priv->pfrags = NULL;
 
-    pll = &(re->priv->pspl);
-    while (*pll) {
-        debug("free spl %lx\n", (unsigned long)(*pll));
-        free((*pll)->payload);
-        free(*pll);
-        pll = &((*pll)->next);
-    }
-    re->priv->pspl = NULL;
 }
 
 RE *RE_compile(const char *rep)
@@ -501,9 +505,10 @@ void RE_free(RE *re)
     LinkList **pll = &(re->priv->pss);
     while (*pll) {
         debug("free state %lx\n", (unsigned long)(*pll));
-        free((*pll)->payload);
-        free(*pll);
+        LinkList *pp = *pll;
         pll = &((*pll)->next);
+        free(pp->payload);
+        free(pp);
     }
 
     free(re->priv);
@@ -526,6 +531,7 @@ int main(int argc, char *argv[])
         printf("match: %s\n", RE_match(re, argv[2]) ? "yes" : "no");
 
         RE_free(re);
+        free(progname);
 #endif
     } else {
         fprintf(stderr, "%s re str", progname);
