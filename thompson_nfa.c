@@ -102,6 +102,8 @@ typedef struct REprivate_ {
     DState *dstart;  // root of DFA states binary tree
     int dstate_size;
 
+    DState *dstates_free; // link list of freed dstates
+
     // track temp resources for freeing
     LinkList *pspl; // StatePtrList, this can be freed before RE_match
     LinkList *pfrags; // Fragment, this can be freed before RE_match
@@ -549,11 +551,19 @@ static DState *dstate_from_list(RE *re, StateList *next_sl)
         }
     }
 
-    next = malloc(sizeof *next + sizeof next_sl->ss[0] * next_sl->size);
-    bzero(next, sizeof *next);
-    next->sl.ss = (State **)(next + 1);
+    if (re->priv->dstates_free) {
+        next = re->priv->dstates_free;
+        re->priv->dstates_free = next->lhs;
+
+    } else {
+        next = malloc(sizeof *next + sizeof next_sl->ss[0] * next_sl->size);
+        next->sl.ss = (State **)(next + 1);
+    }
+
+    bzero(next->out, sizeof next->out);
     memcpy(next->sl.ss, next_sl->ss, sizeof next_sl->ss[0] * next_sl->size);
     next->sl.size = next_sl->size;
+    next->lhs = next->rhs = NULL;
     *ppd = next;
 
     re->priv->dstate_size++;
@@ -655,10 +665,31 @@ int RE_match(RE *re, const char *s)
     return nfa_match(re, s);
 }
 
+static void free_dstate(RE *re, DState *d)
+{
+    if (!d) {
+        return;
+    }
+
+    free_dstate(re, d->lhs);
+    free_dstate(re, d->rhs);
+    d->lhs = re->priv->dstates_free;
+    re->priv->dstates_free = d;
+}
+
 static void free_dfa(RE *re)
 {
     REprivate *priv = re->priv;
-    debug("states before free: %d\n", priv->dstate_size);
+
+    free_dstate(re, priv->dstart);
+    priv->dstate_size = 0;
+    priv->dstart = NULL;
+}
+
+static void release_dstates(RE *re)
+{
+    REprivate *priv = re->priv;
+    debug("states before release: %d\n", priv->dstate_size);
 
     DState **sq = alloca(sizeof(DState*) * priv->dstate_size);
     DState **sqp = sq;
@@ -695,7 +726,7 @@ void RE_free(RE *re)
     }
 
     if (re->priv->dstart) { // free DFA caches
-        free_dfa(re);
+        release_dstates(re);
     }
 
     free(re->priv);
