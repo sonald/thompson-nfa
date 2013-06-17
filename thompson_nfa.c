@@ -75,13 +75,29 @@ typedef struct LinkList_ {
     struct LinkList_ *next;
 } LinkList;
 
+typedef struct DState_ {
+    StateList sl;
+    struct DState_ * out[256];
+
+    struct DState_ *lhs, *rhs;
+} DState;
+
+enum RE_option {
+    RE_DFA = 0x01, // build DFA on-the-fly
+    RE_DUMP = 0x02,  // dump automata transitions
+};
+
 typedef struct REprivate_ {
     char *fp; // frame pointer
     char *rep; // copy of regex literal
 
+    int options;  // flags
     int capacity; // NO. of States a NFA have
     StateList gstore1, gstore2; // temporary storage for NFA State
     int listid;
+
+    DState *dstart;  // root of DFA states binary tree
+    int dstate_size;
 
     // track temp resources for freeing
     LinkList *pspl; // StatePtrList, this can be freed before RE_match
@@ -439,7 +455,6 @@ static void clean_tempdata(RE *re)
     LinkList *pp;
     LinkList **pll = &(re->priv->pspl);
     while (*pll) {
-        debug("free spl %lx\n", (unsigned long)(*pll));
         pp = *pll;
         pll = &((*pll)->next);
         free(pp->payload);
@@ -449,7 +464,6 @@ static void clean_tempdata(RE *re)
 
     pll = &(re->priv->pfrags);
     while (*pll) {
-        debug("free %lx\n", (unsigned long)(*pll));
         pp = *pll;
         pll = &((*pll)->next);
         free(pp->payload);
@@ -471,18 +485,125 @@ RE *RE_compile(const char *rep)
     return re;
 }
 
-int RE_match(RE *re, const char *s)
+void RE_setoption(RE *re, enum RE_option opt)
 {
-    clean_tempdata(re); // reduce memory usage
+    re->priv->options |= opt;
+}
 
+int RE_getoption(RE *re, enum RE_option opt)
+{
+    return re->priv->options & opt;
+}
+
+static int ptrcmp(const void *p1, const void *p2)
+{
+    if (p1 - p2 > 0) {
+        return 1;
+    } else if (p1 - p2 < 0) {
+        return -1;
+    }
+
+    return 0;
+}
+
+static int listcmp(const StateList *sl1, const StateList *sl2)
+{
+    if (sl1->size < sl2->size) {
+        return -1;
+    }
+
+    if (sl1->size > sl2->size) {
+        return 1;
+    }
+
+    for (int i = 0; i < sl1->size; ++i) {
+        if (sl1->ss[i] > sl2->ss[i]) {
+            return 1;
+        } else if (sl1->ss[i] < sl2->ss[i]) {
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+static DState *dstate_from_list(RE *re, StateList *next_sl)
+{
+    DState *next = NULL;
+    qsort(next_sl->ss, next_sl->size, sizeof next_sl->ss[0], ptrcmp);
+
+    DState **ppd = &(re->priv->dstart);
+    while (*ppd) {
+        StateList *sl = &((*ppd)->sl);
+        switch(listcmp(next_sl, sl)) {
+        case 1:
+            ppd = &((*ppd)->lhs); break;
+        case -1:
+            ppd = &((*ppd)->rhs); break;
+        case 0:
+            debug("DFA state already exists, reuse\n");
+            return *ppd;
+        }
+    }
+
+    next = malloc(sizeof *next + sizeof next_sl->ss[0] * next_sl->size);
+    bzero(next, sizeof *next);
+    next->sl.ss = (State **)(next + 1);
+    memcpy(next->sl.ss, next_sl->ss, sizeof next_sl->ss[0] * next_sl->size);
+    next->sl.size = next_sl->size;
+    *ppd = next;
+
+    re->priv->dstate_size++;
+    return next;
+}
+
+static DState *start_dstate(RE *re, State *s)
+{
+    re->priv->dstart = dstate_from_list(
+        re, closure(re, s, &(re->priv->gstore1)));
+    return re->priv->dstart;
+}
+
+static DState *dstep(RE *re, DState *d, int c)
+{
+    DState *next = NULL;
+
+    StateList *next_sl = &(re->priv->gstore1);
+    step(re, &(d->sl), c, next_sl);
+
+    return d->out[c] = dstate_from_list(re, next_sl);
+}
+
+static int dmatch(RE *re, const char *s)
+{
     REprivate *priv = re->priv;
-    priv->capacity = 20;
-    priv->gstore1.ss = (State**)malloc(sizeof(State*) * priv->capacity);
-    priv->gstore2.ss = (State**)malloc(sizeof(State*) * priv->capacity);
+
+    DState *d = start_dstate(re, re->start);
+    DState *next;
+    while (*s) {
+        if ((next = d->out[*s]) == NULL) {
+            next = dstep(re, d, *s);
+        }
+
+        if (ismatched(&(next->sl))) {
+            return 1;
+        }
+
+        ++s;
+        d = next;
+    }
+
+    return 0;
+}
+
+static int nfa_match(RE *re, const char *s)
+{
+    REprivate *priv = re->priv;
 
     StateList *cl, *nl, *t;
     cl = closure(re, re->start, &(priv->gstore1));
     nl = &(priv->gstore2);
+
     while (*s) {
         step(re, cl, *s++, nl);
         t = nl, nl = cl, cl = t;
@@ -492,6 +613,43 @@ int RE_match(RE *re, const char *s)
     }
 
     return 0;
+}
+
+int RE_match(RE *re, const char *s)
+{
+    clean_tempdata(re); // reduce memory usage
+
+    REprivate *priv = re->priv;
+    priv->capacity = 128;
+    priv->gstore1.ss = (State**)malloc(sizeof(State*) * priv->capacity);
+    priv->gstore2.ss = (State**)malloc(sizeof(State*) * priv->capacity);
+
+    const char *p = s;
+    if (RE_getoption(re, RE_DFA)) {
+        debug("run in DFA mode\n");
+        int done = 0;
+        while (*s && (done = dmatch(re, s)) == 0) {
+            debug("try at position %d\n", ++s - p);
+        }
+
+        return done;
+    }
+
+    return nfa_match(re, s);
+}
+
+static void free_dfa(RE *re, DState *d)
+{
+    debug("free %d dfa states\n", re->priv->dstate_size);
+    DState **sq = alloca(sizeof(DState*) * re->priv->dstate_size);
+    DState **sqp = sq;
+    *sqp++ = d;
+    while (sqp > sq) {
+        d = *--sqp;
+        if (d->lhs) *sqp++ = d->lhs;
+        if (d->rhs) *sqp++ = d->rhs;
+        free(d);
+    }
 }
 
 void RE_free(RE *re)
@@ -504,11 +662,14 @@ void RE_free(RE *re)
 
     LinkList **pll = &(re->priv->pss);
     while (*pll) {
-        debug("free state %lx\n", (unsigned long)(*pll));
         LinkList *pp = *pll;
         pll = &((*pll)->next);
         free(pp->payload);
         free(pp);
+    }
+
+    if (re->priv->dstart) { // free DFA caches
+        free_dfa(re, re->priv->dstart);
     }
 
     free(re->priv);
@@ -524,15 +685,16 @@ int main(int argc, char *argv[])
 
     if (argc == 3) {
         RE *re = RE_compile(argv[1]);
+        RE_setoption(re, RE_DFA);
 
-#ifdef DEBUG
-        dump_nfa(re->start);
-#else
+        if (RE_getoption(re, RE_DUMP)) {
+            dump_nfa(re->start);
+        }
+
         printf("match: %s\n", RE_match(re, argv[2]) ? "yes" : "no");
 
         RE_free(re);
         free(progname);
-#endif
     } else {
         fprintf(stderr, "%s re str", progname);
     }
