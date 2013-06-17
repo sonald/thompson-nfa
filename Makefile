@@ -12,7 +12,7 @@ libnfa.dylib: $(SRCS)
 	$(CC) -g -shared $^ -o $@
 
 debug:  $(SRCS)
-	$(CC) $(CFLAGS2) $^ -o $@
+	$(CC) $(CFLAGS2) $^ -o igrep
 
 test: igrep
 	./igrep 'a?a?a' aaaaaa

@@ -23,8 +23,6 @@
 
 #include "nfa.h"
 
-/* #define DEBUG */
-
 #define EINVAL "invalid re"
 
 #define err_quit(msg) {                                          \
@@ -41,6 +39,8 @@ static inline void debug(const char *fmt, ...)
     va_end(ap);
 #endif
 }
+
+#define RE_CACHE_SIZE 32
 
 enum {
     Split = 256,
@@ -85,6 +85,9 @@ typedef struct DState_ {
 enum RE_option {
     RE_DFA = 0x01, // build DFA on-the-fly
     RE_DUMP = 0x02,  // dump automata transitions
+    RE_BOUND_MEM = 0x04,  // bounded memory usage by DFA
+    RE_ANCHOR_HEAD = 0x08, // ^, search only from first
+    RE_ANCHOR_TAIL = 0x10, // $
 };
 
 typedef struct REprivate_ {
@@ -564,6 +567,7 @@ static DState *start_dstate(RE *re, State *s)
     return re->priv->dstart;
 }
 
+static void free_dfa(RE *re);
 static DState *dstep(RE *re, DState *d, int c)
 {
     DState *next = NULL;
@@ -571,7 +575,19 @@ static DState *dstep(RE *re, DState *d, int c)
     StateList *next_sl = &(re->priv->gstore1);
     step(re, &(d->sl), c, next_sl);
 
-    return d->out[c] = dstate_from_list(re, next_sl);
+    DState **ppd;
+    if (RE_getoption(re, RE_BOUND_MEM) && re->priv->dstate_size >= RE_CACHE_SIZE) {
+        free_dfa(re);
+        ppd = &(re->priv->dstart);
+
+    } else {
+
+        ppd = &(d->out[c]);
+    }
+
+    *ppd = dstate_from_list(re, next_sl);
+    debug("new transition: %x [%c] -> %x\n", d, c, *ppd);
+    return *ppd;
 }
 
 static int dmatch(RE *re, const char *s)
@@ -629,6 +645,7 @@ int RE_match(RE *re, const char *s)
         debug("run in DFA mode\n");
         int done = 0;
         while (*s && (done = dmatch(re, s)) == 0) {
+            free_dfa(re);
             debug("try at position %d\n", ++s - p);
         }
 
@@ -638,18 +655,27 @@ int RE_match(RE *re, const char *s)
     return nfa_match(re, s);
 }
 
-static void free_dfa(RE *re, DState *d)
+static void free_dfa(RE *re)
 {
-    debug("free %d dfa states\n", re->priv->dstate_size);
-    DState **sq = alloca(sizeof(DState*) * re->priv->dstate_size);
+    REprivate *priv = re->priv;
+    debug("states before free: %d\n", priv->dstate_size);
+
+    DState **sq = alloca(sizeof(DState*) * priv->dstate_size);
     DState **sqp = sq;
+
+    DState *d = priv->dstart;
     *sqp++ = d;
     while (sqp > sq) {
         d = *--sqp;
         if (d->lhs) *sqp++ = d->lhs;
         if (d->rhs) *sqp++ = d->rhs;
+
+        priv->dstate_size--;
         free(d);
     }
+
+    priv->dstart = NULL;
+    assert(priv->dstate_size == 0);
 }
 
 void RE_free(RE *re)
@@ -669,7 +695,7 @@ void RE_free(RE *re)
     }
 
     if (re->priv->dstart) { // free DFA caches
-        free_dfa(re, re->priv->dstart);
+        free_dfa(re);
     }
 
     free(re->priv);
@@ -686,6 +712,7 @@ int main(int argc, char *argv[])
     if (argc == 3) {
         RE *re = RE_compile(argv[1]);
         RE_setoption(re, RE_DFA);
+        RE_setoption(re, RE_BOUND_MEM);
 
         if (RE_getoption(re, RE_DUMP)) {
             dump_nfa(re->start);
