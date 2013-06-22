@@ -14,4 +14,6 @@ I do make some modifications:
 + dfa1.c use a bounded memory for caching DFA states
 + nfa-posix.y use a reversed NFA, and backward matching
 
+plus, `nfa-posix.y` has a bug in **yylex** function. `+` should be considered as a metacharacter.
+
 [1]: http://swtch.com/~rsc/regexp/regexp1.html
