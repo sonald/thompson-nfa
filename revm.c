@@ -27,7 +27,10 @@ static char *typeNames[] = {
     "Star",
     "Plus",
     "Quest",
-    "Paren"
+    "Paren",
+    "NgStar",
+    "NgPlus",
+    "NgQuest"
 };
 
 static void dumpast(ReAst *root, int deep)
@@ -40,6 +43,15 @@ static void dumpast(ReAst *root, int deep)
     case Any:
         fprintf(stderr, "%*c%s(%c)\n", 2*deep, ' ', typeNames[root->type], root->c?root->c:'.');
         break;
+
+    case Star:
+    case Plus:
+    case Quest:
+        if (root->nongreedy == 1) {
+            fprintf(stderr, "%*c%s\n", 2*deep, ' ', typeNames[root->type+Paren-Star+1]);
+            break;
+        }
+        //fallthrough
 
     default:
         fprintf(stderr, "%*c%s\n", 2*deep, ' ', typeNames[root->type]);
@@ -301,6 +313,7 @@ static void addthread(Re *re, ThreadList *tl, Inst *pc, Sub *sub, char *sp)
         break;
 
     case ISave: {
+        //FIXME: mem leak
         Sub *newsub = malloc(sizeof re->sub);
         memcpy(newsub, sub, sizeof re->sub);
         newsub[pc->c].sp = sp;
@@ -330,7 +343,7 @@ int re_exec(Re *re, char *s)
     addthread(re, cl, &re->insts[0], re->sub, (char *)s);
 
     for (;;s++) {
-        debug("*s: %c\n", *s);
+        /* debug("*s: %c\n", *s); */
         /* dumpthreads("cl:\n", re, cl); */
         re->gen++;
         nl->n = 0;
