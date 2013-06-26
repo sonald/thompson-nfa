@@ -381,8 +381,13 @@ int re_exec(Re *re, char *s)
         }
     }
 
+    int done = re->matched > 0;
     dumpsub(re, re->sub);
-    return re->matched > 0;
+    if (re_getopt(re, RE_ANCHOR_TAIL)) {
+        done = done && (re->sub[1].sp == s);
+    }
+
+    return done;
 }
 
 void re_free(Re *re)

@@ -29,6 +29,25 @@ re: alt EOL {
     re->ast = $$;
     return 0;
   }
+  | '^' alt EOL {
+	  $$ = $2;
+	  re->ast = $$;
+	  re_setopt(re, RE_ANCHOR_HEAD);
+	  return 0;
+  }
+  | '^' alt '$' EOL {
+	  $$ = $2;
+	  re->ast = $$;
+	  re_setopt(re, RE_ANCHOR_HEAD);
+	  re_setopt(re, RE_ANCHOR_TAIL);	  
+	  return 0;
+  }  
+  | alt '$' EOL {
+	  $$ = $1;
+	  re->ast = $$;
+	  re_setopt(re, RE_ANCHOR_TAIL);
+	  return 0;
+  }
   ;
 
 alt: concat
@@ -94,7 +113,7 @@ int yylex()
     }
 
     int c = *input++;
-    if (strchr("*+?:)(|.", c)) {
+    if (strchr("*+?:)(|.^$", c)) {
         return c;
     }
 
