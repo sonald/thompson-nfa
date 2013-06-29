@@ -256,18 +256,49 @@ int re_getopt(Re *re, int opt)
     return re->opts & opt;
 }
 
+static int collect_insts(ReAst *ast)
+{
+    switch (ast->type) {
+    case Alt:
+    case Star:
+    case Paren: return 2;
+
+    case Concat: return 0;
+
+    case Char:
+    case Any:
+    case Plus:
+    case Quest: return 1;
+
+    default:
+        assert(0);
+        return 0;
+    }
+}
+
+static int visit_ast(ReAst *ast, int (*fn)(ReAst*))
+{
+    if (!ast) {
+        return 0;
+    }
+
+    int val = visit_ast(ast->lhs, fn) + visit_ast(ast->rhs, fn);
+    val += fn(ast);
+    return val;
+}
+
+//FIXME: global var, no good
 extern char *input;
 Re *re_new(const char *rep, int opts)
 {
     Re *re = malloc(sizeof(Re));
     bzero(re, sizeof re);
 
-    int len = strlen(rep);
     input = (char *)rep;
-    re->insts = malloc(sizeof(Inst)*3*len);
     re_setopt(re, opts);
 
     yyparse(re);
+
     re->ast = ast_new(Paren, 0, re->ast, NULL);
     if (!re_getopt(re, RE_ANCHOR_HEAD)) {
         ReAst *ast = ast_new(Star, 0, ast_new(Any, 0, NULL, NULL), NULL);
@@ -275,6 +306,10 @@ Re *re_new(const char *rep, int opts)
         re->ast = ast_new(Concat, 0, ast, re->ast);
     }
     dumpast(re->ast, 0);
+
+    int nr_insts = visit_ast(re->ast, collect_insts) + 1; // plus 1 for IMatch
+    debug("insts size: %d\n", nr_insts);
+    re->insts = malloc(sizeof(Inst) * nr_insts);
 
     re_compile(re, re->ast);
     re_addInst(re, IMatch, 0, NULL, NULL);
@@ -390,10 +425,22 @@ int re_exec(Re *re, char *s)
     return done;
 }
 
+static void free_ast(ReAst *ast)
+{
+    if (!ast) {
+        return;
+    }
+
+    free_ast(ast->lhs);
+    free_ast(ast->rhs);
+    free(ast);
+}
+
 void re_free(Re *re)
 {
     free(re->tpool[0].threads);
     free(re->tpool[1].threads);
     free(re->insts);
+    free_ast(re->ast);
     free(re);
 }
